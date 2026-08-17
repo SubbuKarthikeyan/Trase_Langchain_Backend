@@ -1,0 +1,190 @@
+# Implementation Plan — Trase Bus Travel Backend
+
+## Overview
+
+Two distinct features are being added to the backend:
+
+1. **DB Schema Fix + Scalable Ingestion**: Fix the MongoDB schema so every chunk correctly stores all required metadata fields, deduplicate on startup, and handle future new file additions gracefully without re-ingesting unchanged data.
+2. **Intelligent Query Router**: Add a routing layer that classifies each user query and dispatches it to the correct handler — `GeneralLLM`, `RAG`, `ToolCall`, or `RAG + ToolCall` — making the system horizontally scalable as new tools/capabilities are added.
+
+---
+
+## Part 1 — DB Schema Fix & Scalable Ingestion
+
+### Current Issues Found
+
+| # | Location | Issue |
+|---|----------|-------|
+| 1 | `build_index.py` → `_get_ingested_sources()` | Reads `metadata.source` and `metadata.file_hash` from MongoDB using a dot-notation projection. However, LangChain's `MongoDBAtlasVectorSearch.add_documents()` stores metadata as a **nested sub-document** (`{"metadata": {...}}`). The projection query works, but only if LangChain stores consistently — this is brittle and untested across versions. |
+| 2 | `build_index.py` → `_get_ingested_sources()` | The function can return **multiple conflicting hashes per filename** if duplication has already occurred (e.g., due to a crash mid-ingest). The `sources[src] = fh` assignment silently picks the last one seen, meaning re-ingested data could appear unchanged even though it was partially loaded. |
+| 3 | `build_index.py` → `ingest_file()` | There is **no deduplication guard** before calling `vectorstore.add_documents()`. If the server crashes mid-ingest and restarts, chunks from a partially loaded file get duplicated since the hash is only written on success but the file entry may already exist in `ingested_sources`. |
+| 4 | `build_index.py` → `check_and_update_index()` | Uses `os.listdir()` which is **non-recursive** — any subdirectories added inside `data/raw/` are silently ignored. |
+| 5 | `lc_vectorstore.py` | The `MongoClient` is created fresh on every `_get_collection()` call in `build_index.py`, while `get_vectorstore()` is cached via `@lru_cache`. These two are **out of sync** — they can connect to different logical states. |
+| 6 | `build_index.py` | **No MongoDB index** is ensured on `metadata.source` — deletes and lookups on this field do full collection scans at scale. |
+| 7 | `loader.py` | Supports only `.csv`, `.pdf`, `.txt`. Adding new formats requires changing two files (`loader.py` AND `build_index.py`'s `SUPPORTED_EXTENSIONS`). This is a scalability concern. |
+
+### Fixes Planned
+
+#### [MODIFY] [build_index.py](file:///c:/Users/LUCIFER/OneDrive/Documents/project_3/backend/app/rag/build_index.py)
+
+- **Deduplication guard**: Before calling `add_documents()`, run `_delete_by_source(collection, filename)` unconditionally when a hash mismatch is detected *or* as a safety flush for partial ingests.
+- **Consistent hash tracking**: Instead of reading back from LangChain's stored docs (which can be unreliable), introduce a **dedicated `file_registry` MongoDB collection** that stores `{filename, file_hash, chunk_count, ingested_at}` as a single source of truth. This is separate from the vector collection.
+- **Recursive directory scan**: Replace `os.listdir()` with `os.walk()` so subdirectories under `data/raw/` are automatically picked up.
+- **Ensure MongoDB index** on `metadata.source` at startup for fast delete/query.
+- **Centralize `SUPPORTED_EXTENSIONS`** into `loader.py` and import from there (single place to add new formats).
+- **Atomic ingest + registry write**: Only write to `file_registry` after chunks are successfully stored — true atomicity (MongoDB doesn't support cross-collection transactions on Atlas free tier, but success-only writes are sufficient here).
+
+#### [NEW] `app/rag/file_registry.py`
+
+A new thin module to manage the `file_registry` collection:
+```
+file_registry collection schema:
+{
+  "_id": ObjectId,
+  "filename": str,        # e.g. "bus_data_modified.csv"
+  "file_hash": str,       # MD5 hex
+  "chunk_count": int,
+  "ingested_at": datetime
+}
+```
+Functions: `get_registry()`, `upsert_file_entry()`, `delete_file_entry()`, `get_all_entries()`.
+
+#### [MODIFY] [loader.py](file:///c:/Users/LUCIFER/OneDrive/Documents/project_3/backend/app/rag/loader.py)
+
+- Move `SUPPORTED_EXTENSIONS` set into `loader.py` as the single canonical source.
+- Export it so `build_index.py` can import it instead of defining its own copy.
+
+---
+
+## Part 2 — Scalable Query Router
+
+### Design Philosophy
+
+Rather than hardcoding which pipeline to use, a **Router** module classifies the incoming query into one of four intent categories, then dispatches to the appropriate handler. This makes it trivially easy to add a new tool: just register it in the tool registry and the router will use it when appropriate.
+
+```
+User Query
+    │
+    ▼
+┌─────────────┐
+│   Router    │  ← LLM-based classification (fast, single call)
+└─────┬───────┘
+      │
+  Intent: one of ──► general_llm   → GeneralLLM handler (no context)
+                 ──► rag           → RAG handler (vector search + LLM)
+                 ──► tool          → ToolCall handler (structured tool exec)
+                 ──► rag_and_tool  → Both RAG + ToolCall (merged context)
+```
+
+### New Files
+
+#### [NEW] `app/router/intent_classifier.py`
+
+- Uses the LLM (Groq/Gemini fallback, same as existing) with a **small classification prompt** to return a JSON intent: `{"intent": "rag" | "general_llm" | "tool" | "rag_and_tool", "tool_name": null | "tool_name_here"}`.
+- Falls back to `"rag"` if classification fails (safest default for a travel chatbot).
+- Keeps a **tool registry** — a simple dict: `{"tool_name": description}` — that is passed to the classifier so it knows what tools exist. Adding a new tool = one line.
+
+#### [NEW] `app/router/handlers.py`
+
+Four handler functions:
+
+| Handler | What it does |
+|---------|-------------|
+| `handle_general_llm(query)` | Calls LLM with system prompt only, no retrieved context |
+| `handle_rag(query)` | Current behavior: retrieve → format → RAG prompt → LLM |
+| `handle_tool(query, tool_name)` | Executes registered tool, returns structured result |
+| `handle_rag_and_tool(query, tool_name)` | RAG context + tool result merged before LLM call |
+
+All handlers are `async` generators (support streaming).
+
+#### [NEW] `app/router/tool_registry.py`
+
+A registry pattern for tools:
+```python
+TOOL_REGISTRY: dict[str, Callable] = {}
+
+def register_tool(name: str, fn: Callable, description: str): ...
+def get_tool(name: str) -> Callable: ...
+```
+
+Adding a new tool in the future = call `register_tool(...)` from its own module. Zero changes to the router itself.
+
+#### [NEW] `app/routes/query.py`
+
+New FastAPI router at `POST /query/stream`:
+- Accepts `{"message": str}` JSON body (replaces the fragile query-param approach in `/chatbot/stream`).
+- Calls the intent classifier, dispatches to the right handler, and streams the response.
+- Old `/chatbot/stream` endpoint remains functional for backward compatibility.
+
+### Modified Files
+
+#### [MODIFY] [main.py](file:///c:/Users/LUCIFER/OneDrive/Documents/project_3/backend/app/main.py)
+
+- Register the new `query` router: `app.include_router(query.router)`.
+
+#### [MODIFY] [requirements.txt](file:///c:/Users/LUCIFER/OneDrive/Documents/project_3/backend/requirements.txt)
+
+- Add `langchain-core` (explicit pin for stability) — already transitively included but good to declare.
+
+---
+
+## Proposed Directory Structure After Changes
+
+```
+backend/
+├── app/
+│   ├── core/
+│   │   └── config.py               (unchanged)
+│   ├── prompts/
+│   │   ├── rag_prompt.py           (unchanged)
+│   │   ├── system_prompt.py        (unchanged)
+│   │   └── general_prompt.py       [NEW] — prompt for general LLM handler
+│   ├── rag/
+│   │   ├── build_index.py          [MODIFY] — fixes + recursive scan + registry
+│   │   ├── chunker.py              (unchanged)
+│   │   ├── file_registry.py        [NEW] — dedicated registry collection
+│   │   ├── lc_vectorstore.py       (unchanged)
+│   │   ├── loader.py               [MODIFY] — export SUPPORTED_EXTENSIONS
+│   │   └── retriever.py            (unchanged)
+│   ├── router/
+│   │   ├── __init__.py             [NEW]
+│   │   ├── intent_classifier.py    [NEW] — LLM-based query classifier
+│   │   ├── handlers.py             [NEW] — general/rag/tool/rag+tool handlers
+│   │   └── tool_registry.py        [NEW] — tool registration system
+│   ├── routes/
+│   │   ├── chatbot.py              (unchanged — kept for backward compat)
+│   │   └── query.py                [NEW] — new smart routing endpoint
+│   ├── utils/
+│   │   └── lc_llm.py               (unchanged)
+│   └── main.py                     [MODIFY] — register query router
+└── requirements.txt                [MODIFY] — add langchain-core explicit
+```
+
+---
+
+## Verification Plan
+
+### Automated / Semi-Automated
+- Start the server — confirm `file_registry` collection is created in MongoDB.
+- Drop `bus_routes_v2` collection and restart — verify all files in `data/raw/` are re-ingested cleanly with no duplicates.
+- Add a new CSV file to `data/raw/` and restart — verify only the new file is ingested.
+- Modify an existing CSV and restart — verify old chunks are deleted and new ones are ingested.
+
+### Manual API Tests
+- `POST /query/stream` with a route question → should route to `rag`.
+- `POST /query/stream` with "hello" → should route to `general_llm`.
+- `POST /chatbot/stream?message=...` → should still work (backward compat).
+- After adding a test tool, `POST /query/stream` with a tool-triggering question → should route to `tool`.
+
+---
+
+## Open Questions
+
+> [!IMPORTANT]
+> **Q1**: The current `/chatbot/stream` endpoint accepts `message` as a **query parameter** (`?message=...`). The new `/query/stream` will accept a **JSON body**. Do you want to also update `/chatbot/stream` to accept a JSON body, or keep it as-is for backward compatibility with the frontend?
+
+> [!IMPORTANT]
+> **Q2**: For the **intent classifier**, do you want it to use a fast local LLM call (adds ~100–300ms latency per request) or a **keyword/rule-based classifier** (instant, but less intelligent)? Recommended: LLM-based for accuracy, rule-based as fallback.
+
+> [!IMPORTANT]
+> **Q3**: Do you have any **existing tools** in mind (e.g., a fare calculator, live bus tracking API, booking system) that should be registered first? Or should the tool registry be set up empty and ready for future addition?

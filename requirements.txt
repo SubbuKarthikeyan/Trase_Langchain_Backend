@@ -1,0 +1,18 @@
+fastapi
+uvicorn
+
+python-dotenv
+
+pymongo
+
+# LangChain ecosystem
+langchain
+langchain-core
+langchain-google-genai
+langchain-groq
+langchain-mongodb
+langchain-community
+langchain-text-splitters
+
+# PDF loader support
+pypdf
