@@ -13,6 +13,8 @@ langchain-groq
 langchain-mongodb
 langchain-community
 langchain-text-splitters
+langchain-mcp-adapters
+langchain-mistralai
 
 # PDF loader support
 pypdf

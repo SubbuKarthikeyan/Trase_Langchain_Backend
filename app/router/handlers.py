@@ -32,9 +32,10 @@ _retriever = Retriever(top_k=5)
 # ──────────────────────────────────────────────────────────────────────────────
 
 def _get_rag_context(question: str) -> str:
-    """Retrieves and formats document chunks from the vector store."""
+    """Retrieves and formats document chunks from vector store / hybrid RRF engine."""
     chunks = _retriever.retrieve(question)
-    print(f"  [Handler-RAG] Retrieved {len(chunks)} chunk(s).")
+    mode = "Hybrid RRF" if _retriever.hybrid else "Waterfall"
+    print(f"  [Handler-RAG] Retrieved {len(chunks)} chunk(s) via {mode} search.")
     return "\n\n".join(chunks)
 
 
@@ -203,3 +204,5 @@ def handle_rag_and_tool(query: str, tool_name: str):
     except Exception as err:
         print(f"  [Handler Error - RAG+Tool] {err}")
         yield from handle_rag(query)
+
+

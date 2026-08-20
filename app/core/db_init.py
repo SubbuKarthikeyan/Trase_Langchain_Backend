@@ -5,8 +5,9 @@ Database initialization utility to ensure proper MongoDB collection schemas
 and indexes across Trase Bus Travel API startup.
 """
 
-from pymongo import MongoClient, ASCENDING, DESCENDING
+from pymongo import ASCENDING, DESCENDING
 from app.core.config import settings
+from app.core.mongo_client import get_database
 
 
 def initialize_database_indexes() -> None:
@@ -22,8 +23,7 @@ def initialize_database_indexes() -> None:
         return
 
     try:
-        client = MongoClient(settings.MONGO_URL, serverSelectionTimeoutMS=5000)
-        db = client[settings.MONGO_DB_NAME]
+        db = get_database()
 
         print("=" * 55)
         print(f"[DB Init] Verifying collection indexes in database '{settings.MONGO_DB_NAME}'...")

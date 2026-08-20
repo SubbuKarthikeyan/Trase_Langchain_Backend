@@ -122,6 +122,11 @@ def classify_intent(query: str) -> dict:
         # Use the underlying LLM directly (non-streaming, single call)
         response = llm.invoke(prompt)
         raw_text = response.content if hasattr(response, "content") else str(response)
+        if isinstance(raw_text, list):
+            raw_text = "".join(
+                item if isinstance(item, str) else str(item.get("text", "")) if isinstance(item, dict) else str(item)
+                for item in raw_text
+            )
 
         # Extract JSON from response (handle models that add extra text)
         json_match = re.search(r"\{.*?\}", raw_text, re.DOTALL)
