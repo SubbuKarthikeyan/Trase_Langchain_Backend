@@ -37,7 +37,7 @@ from app.rag.file_registry import (
     ensure_vector_source_index,
 )
 from app.core.config import settings
-from pymongo import MongoClient
+from app.core.mongo_client import get_collection
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -55,8 +55,7 @@ def _calculate_file_hash(file_path: str) -> str:
 
 def _get_vector_collection():
     """Returns the raw PyMongo bus_routes_v2 collection."""
-    client = MongoClient(settings.MONGO_URL)
-    return client[settings.MONGO_DB_NAME][settings.MONGO_COLLECTION_NAME]
+    return get_collection(settings.MONGO_COLLECTION_NAME)
 
 
 def _delete_chunks_by_source(collection, source: str) -> None:
@@ -104,9 +103,7 @@ def _ingest_structured_routes(file_path: str) -> None:
         return
 
     try:
-        client = MongoClient(settings.MONGO_URL)
-        db = client[settings.MONGO_DB_NAME]
-        col = db[settings.MONGO_STRUCTURED_ROUTES_COLLECTION]
+        col = get_collection(settings.MONGO_STRUCTURED_ROUTES_COLLECTION)
 
         # Prune existing records for this file before re-ingesting
         filename = os.path.basename(file_path)

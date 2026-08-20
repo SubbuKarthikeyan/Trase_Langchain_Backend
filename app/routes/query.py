@@ -112,3 +112,18 @@ def query_router_health():
         "status": "ok",
         "registered_tools": list_tools(),
     }
+
+
+@router.get("/debug")
+def query_debug(message: str, top_k: int = 5):
+    """
+    Debug endpoint — returns raw RRF scores, individual retrieval leg
+    candidates, and fused ranking breakdown for development inspection.
+
+    Query params:
+        GET /query/debug?message=buses+from+Chennai+to+Madurai&top_k=5
+    """
+    from app.rag.retriever import Retriever
+    retriever = Retriever(top_k=top_k)
+    return retriever.retrieve_with_debug(message, top_k=top_k)
+

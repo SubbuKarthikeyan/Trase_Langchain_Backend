@@ -1,12 +1,12 @@
 """
 lc_llm.py
 ──────────
-Provides a LangChain chat LLM with automatic Groq → Gemini fallback.
+Provides a LangChain chat LLM with automatic Gemini <-> Groq fallback.
 
 Usage
 -----
     from app.utils.lc_llm import get_llm
-    llm = get_llm()      # ChatGroq with Gemini as fallback
+    llm = get_llm()      # ChatGoogleGenerativeAI / ChatGroq with fallback
     llm.stream(messages) # works for streaming
 """
 
@@ -22,66 +22,43 @@ from app.core.config import settings
 def get_llm():
     """
     Returns a LangChain BaseChatModel wired with multi-model fallback:
-        Primary:   ChatGroq (configured GROQ_MODEL, e.g. llama-3.3-70b-versatile)
-        Fallback1: ChatGroq (llama-3.1-8b-instant)
-        Fallback2: ChatGoogleGenerativeAI (configured GEMINI_MODEL, e.g. gemini-2.0-flash)
-        Fallback3: ChatGoogleGenerativeAI (gemini-1.5-flash)
+        Primary:   ChatGoogleGenerativeAI (gemini-3.6-flash)
+        Fallback1: ChatGroq (llama-3.1-8b-instant / configured GROQ_MODEL)
 
     The `with_fallbacks()` wrapper automatically switches models if any exception
-    (rate limit 429, 503, quota exhaustion, etc.) occurs.
+    occurs.
     """
-    fallbacks = []
+    models = []
 
-    primary_model = settings.GROQ_MODEL or "llama-3.3-70b-versatile"
-    fallback_groq_model = "llama-3.1-8b-instant"
-
-    if settings.GROQ_API_KEY:
-        primary = ChatGroq(
-            model=primary_model,
-            api_key=settings.GROQ_API_KEY,
-            temperature=0.3,
-            max_tokens=600,
-            streaming=True,
-        )
-        if fallback_groq_model != primary_model:
-            fallbacks.append(
-                ChatGroq(
-                    model=fallback_groq_model,
-                    api_key=settings.GROQ_API_KEY,
-                    temperature=0.3,
-                    max_tokens=600,
-                    streaming=True,
-                )
-            )
-    else:
-        primary = None
-
-    gemini_model = settings.GEMINI_MODEL or "gemini-2.0-flash"
+    # Primary: Gemini 3.6 Flash
     if settings.GEMINI_API_KEY:
-        gemini_primary = ChatGoogleGenerativeAI(
-            model=gemini_model,
-            google_api_key=settings.GEMINI_API_KEY,
-            temperature=0.3,
-            max_output_tokens=600,
-            streaming=True,
-        )
-        if primary is None:
-            primary = gemini_primary
-        else:
-            fallbacks.append(gemini_primary)
-
-        if gemini_model != "gemini-1.5-flash":
-            fallbacks.append(
-                ChatGoogleGenerativeAI(
-                    model="gemini-1.5-flash",
-                    google_api_key=settings.GEMINI_API_KEY,
-                    temperature=0.3,
-                    max_output_tokens=600,
-                    streaming=True,
-                )
+        gemini_model = settings.GEMINI_MODEL or "gemini-3.6-flash"
+        models.append(
+            ChatGoogleGenerativeAI(
+                model=gemini_model,
+                google_api_key=settings.GEMINI_API_KEY,
+                temperature=0.3,
+                max_output_tokens=2048,
+                streaming=True,
             )
+        )
 
-    if primary is None:
-        raise ValueError("Neither GROQ_API_KEY nor GEMINI_API_KEY is configured in settings.")
+    # Fallback: Groq LLM
+    if settings.GROQ_API_KEY:
+        groq_model = settings.GROQ_MODEL or "openai/gpt-oss-20b"
+        models.append(
+            ChatGroq(
+                model=groq_model,
+                api_key=settings.GROQ_API_KEY,
+                temperature=0.3,
+                max_tokens=2048,
+                streaming=True,
+            )
+        )
 
+    if not models:
+        raise ValueError("Neither GEMINI_API_KEY nor GROQ_API_KEY is configured in settings.")
+
+    primary = models[0]
+    fallbacks = models[1:]
     return primary.with_fallbacks(fallbacks) if fallbacks else primary

@@ -20,10 +20,11 @@ Why a separate collection?
 """
 
 from datetime import datetime, timezone
-from pymongo import MongoClient, ASCENDING
+from pymongo import ASCENDING
 from pymongo.collection import Collection
 
 from app.core.config import settings
+from app.core.mongo_client import get_collection, get_database
 
 REGISTRY_COLLECTION_NAME = getattr(settings, "MONGO_REGISTRY_COLLECTION", "file_registry")
 
@@ -33,10 +34,8 @@ REGISTRY_COLLECTION_NAME = getattr(settings, "MONGO_REGISTRY_COLLECTION", "file_
 # ──────────────────────────────────────────────────────────────────────────────
 
 def _get_registry_collection() -> Collection:
-    """Returns the raw PyMongo `file_registry` collection."""
-    client = MongoClient(settings.MONGO_URL)
-    db = client[settings.MONGO_DB_NAME]
-    col = db[REGISTRY_COLLECTION_NAME]
+    """Returns the raw PyMongo `file_registry` collection using shared client."""
+    col = get_collection(REGISTRY_COLLECTION_NAME)
 
     # Ensure a unique index on filename so upserts are safe and fast.
     col.create_index([("filename", ASCENDING)], unique=True, background=True)
@@ -93,7 +92,6 @@ def ensure_vector_source_index() -> None:
     Prevents full collection scans when deleting chunks by source filename.
     Called once at startup.
     """
-    client = MongoClient(settings.MONGO_URL)
-    col = client[settings.MONGO_DB_NAME][settings.MONGO_COLLECTION_NAME]
+    col = get_collection(settings.MONGO_COLLECTION_NAME)
     col.create_index([("metadata.source", ASCENDING)], background=True)
     print("  [Registry] Index on metadata.source ensured.")
