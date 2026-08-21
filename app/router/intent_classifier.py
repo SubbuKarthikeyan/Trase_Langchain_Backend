@@ -100,9 +100,6 @@ def _keyword_fallback(query: str) -> dict:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Public classifier
-# ──────────────────────────────────────────────────────────────────────────────
-
 def classify_intent(query: str) -> dict:
     """
     Classifies the user query and returns a dict:
@@ -114,6 +111,12 @@ def classify_intent(query: str) -> dict:
     Guarantees never to raise — always returns a valid classification.
     """
     print(f"\n[Router] Classifying intent for: '{query}'")
+
+    # Fast heuristic check for email dispatch requests
+    email_match = re.search(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}", query)
+    if email_match or any(kw in query.lower() for kw in ["send email", "send to mail", "send mail", "email me", "mail me"]):
+        print("  [Router Heuristic] Detected email request / address in query -> routing to 'tool' (send_email)")
+        return {"intent": "tool", "tool_name": "send_email"}
 
     try:
         llm = get_llm()
@@ -153,3 +156,4 @@ def classify_intent(query: str) -> dict:
         fallback = _keyword_fallback(query)
         print(f"  [Router] Fallback intent: {fallback['intent']}")
         return fallback
+

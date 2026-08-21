@@ -1,13 +1,11 @@
 """
 general_prompt.py
 ──────────────────
-Defines the ChatPromptTemplate used by the GeneralLLM handler.
+Defines the ChatPromptTemplate used by GeneralLLM handler.
 
-Used when the router determines a query does NOT need RAG context
-(e.g., greetings, general travel advice, small talk).
-
-The template receives one variable at runtime:
-  - {question}: the user's message
+Runtime variables:
+  - {chat_history} : multi-turn conversation history
+  - {question}     : the user's current message
 """
 
 from langchain_core.prompts import (
@@ -17,25 +15,19 @@ from langchain_core.prompts import (
 )
 from app.prompts.system_prompt import SYSTEM_PROMPT
 
-# ──────────────────────────────────────────────────────────────────────────────
-# General LLM prompt (no RAG context injected)
-# ──────────────────────────────────────────────────────────────────────────────
-
 GENERAL_HUMAN_TEMPLATE = """\
+Recent Chat History:
+{chat_history}
+
 User Message:
 {question}
 
 Instructions:
-- Respond naturally, warmly, and helpfully as Trase, the travel assistant.
-- If the user is asking a general travel-related question not specific to bus \
-routes or schedules, you may answer from general knowledge.
-- If the user is asking for specific bus schedules, routes, or fares, \
-politely let them know you need to check the database and suggest they rephrase \
-their question as a route or destination query.
-- Never fabricate specific bus times, fares, or route details.
+- Respond naturally, warmly, and concisely as Trase AI.
+- Use conversation history to accurately answer questions about previous turns (e.g. "What bus did I choose?", "Which route were we discussing?").
+- If the user asks for bus routes or schedules, politely suggest rephrasing with origin and destination.
 
 Answer:"""
-
 
 GENERAL_PROMPT = ChatPromptTemplate.from_messages([
     SystemMessagePromptTemplate.from_template(SYSTEM_PROMPT),

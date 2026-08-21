@@ -33,6 +33,20 @@ _TOOL_REGISTRY: dict[str, dict] = {}
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Auto-registration of default tools
+# ──────────────────────────────────────────────────────────────────────────────
+
+try:
+    from app.tools.email_tool import send_bus_details_email
+    _TOOL_REGISTRY["send_email"] = {
+        "fn": send_bus_details_email,
+        "description": "Sends bus route, travel schedules, fares, and facilities details to a recipient email address via AgentMail API. Expects target email and bus details."
+    }
+except Exception as _err:
+    print(f"[ToolRegistry Warning] Could not auto-register email tool: {_err}")
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Public API
 # ──────────────────────────────────────────────────────────────────────────────
 
