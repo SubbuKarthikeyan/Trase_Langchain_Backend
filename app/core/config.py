@@ -38,8 +38,21 @@ class Settings:
     EMAIL_SENDER = os.getenv("EMAIL_SENDER", "trase_mail@agentmail.to")
     AGENTMAIL_API_KEY = os.getenv("AGENTMAIL_API_KEY")
 
+    # ── Auth / JWT Settings ──────────────────────────────────────────────────
+    JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", "change-me-in-production")
+    JWT_REFRESH_SECRET_KEY = os.getenv("JWT_REFRESH_SECRET_KEY", "change-me-refresh")
+    JWT_ALGORITHM = "HS256"
+    ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "30"))
+    REFRESH_TOKEN_EXPIRE_DAYS = int(os.getenv("REFRESH_TOKEN_EXPIRE_DAYS", "7"))
+
+    # ── Clerk (backend verification) ─────────────────────────────────────────
+    CLERK_SECRET_KEY = os.getenv("CLERK_SECRET_KEY")
+    CLERK_JWKS_URL = os.getenv("CLERK_JWKS_URL")
+
+    # ── Auth MongoDB Collections ─────────────────────────────────────────────
+    MONGO_USERS_COLLECTION = os.getenv("MONGO_USERS_COLLECTION", "users")
+    MONGO_PROFILES_COLLECTION = os.getenv("MONGO_PROFILES_COLLECTION", "profiles")
+    MONGO_CONNECTORS_COLLECTION = os.getenv("MONGO_CONNECTORS_COLLECTION", "connectors")
+
 
 settings = Settings()
-
-
-

@@ -50,6 +50,22 @@ def initialize_database_indexes() -> None:
         routes_col.create_index([("origin", ASCENDING), ("destination", ASCENDING)], background=True)
         print(f"  [DB Init] Collection '{settings.MONGO_STRUCTURED_ROUTES_COLLECTION}': Indexes on 'route_id' (unique) & ('origin', 'destination') verified.")
 
+        # 5. users collection indexes
+        users_col = db[settings.MONGO_USERS_COLLECTION]
+        users_col.create_index([("clerk_user_id", ASCENDING)], unique=True, background=True)
+        users_col.create_index([("email", ASCENDING)], unique=True, background=True)
+        print(f"  [DB Init] Collection '{settings.MONGO_USERS_COLLECTION}': Indexes on 'clerk_user_id' (unique) & 'email' (unique) verified.")
+
+        # 6. profiles collection indexes
+        profiles_col = db[settings.MONGO_PROFILES_COLLECTION]
+        profiles_col.create_index([("user_id", ASCENDING)], unique=True, background=True)
+        print(f"  [DB Init] Collection '{settings.MONGO_PROFILES_COLLECTION}': Index on 'user_id' (unique) verified.")
+
+        # 7. connectors collection indexes
+        connectors_col = db[settings.MONGO_CONNECTORS_COLLECTION]
+        connectors_col.create_index([("user_id", ASCENDING), ("provider", ASCENDING)], unique=True, background=True)
+        print(f"  [DB Init] Collection '{settings.MONGO_CONNECTORS_COLLECTION}': Index on ('user_id', 'provider') (unique) verified.")
+
         print("[DB Init] All database schema indexes successfully initialized.")
         print("=" * 55)
 
@@ -59,3 +75,4 @@ def initialize_database_indexes() -> None:
 
 if __name__ == "__main__":
     initialize_database_indexes()
+

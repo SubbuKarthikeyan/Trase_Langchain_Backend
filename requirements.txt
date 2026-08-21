@@ -18,3 +18,8 @@ langchain-mistralai
 
 # PDF loader support
 pypdf
+
+# Auth & JWT
+PyJWT
+cryptography
+httpx
