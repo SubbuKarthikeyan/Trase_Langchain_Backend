@@ -5,6 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.routes import chatbot
 from app.routes import query as query_router
+from app.auth.routes import router as auth_router
 from app.rag.build_index import check_and_update_index
 from app.core.db_init import initialize_database_indexes
 
@@ -31,12 +32,11 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# Allow the React dev server (and any origin in dev) to call the API.
-# Restrict origins to your deployed frontend URL in production.
+# Allow React dev server with credentials for cookie-based refresh tokens
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=False,
+    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -47,6 +47,7 @@ def landing_page():
     return {
         "message": "Trase Bus Travel API",
         "endpoints": {
+            "auth": "/api/auth",
             "smart_chat": "POST /query/stream  (JSON body: {message: '...'})",
             "legacy_chat": "POST /chatbot/stream?message=...",
             "router_health": "GET /query/health",
@@ -59,8 +60,12 @@ def health():
     return {"status": "ok", "message": "Backend is healthy."}
 
 
+# Authentication router
+app.include_router(auth_router)
+
 # Legacy RAG-only router (preserved for backward compatibility)
 app.include_router(chatbot.router)
 
 # New intelligent query router (routes to GeneralLLM / RAG / Tool / RAG+Tool)
 app.include_router(query_router.router)
+
