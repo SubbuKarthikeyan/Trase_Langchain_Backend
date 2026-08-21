@@ -34,9 +34,10 @@ class Settings:
     MONGO_COLLECTION_NAME_V2 = MONGO_COLLECTION_NAME
     MONGO_VECTOR_INDEX_V2 = MONGO_VECTOR_INDEX
 
-    # TollCall API Keys
-    EMAIL_SENDER=am_us_inbox_7b9c3dbb5b2be5ffa6e57b58e6ab7b089e747fbe364dbd37383454ca7400b506
-    
+    # AgentMail Settings
+    EMAIL_SENDER = os.getenv("EMAIL_SENDER", "trase_mail@agentmail.to")
+    AGENTMAIL_API_KEY = os.getenv("AGENTMAIL_API_KEY")
+
 
 settings = Settings()
 

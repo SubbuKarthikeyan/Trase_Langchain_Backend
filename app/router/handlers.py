@@ -4,17 +4,12 @@ handlers.py
 Four streaming handler coroutines dispatched by the query router.
 
 Each handler is a plain Python generator that yields string tokens —
-compatible with FastAPI's StreamingResponse.
-
-Handlers:
-    handle_general_llm(query)         → LLM only, no context
-    handle_rag(query)                 → Vector search → RAG prompt → LLM
-    handle_tool(query, tool_name)     → Execute tool → format result → LLM
-    handle_rag_and_tool(query, tool_name) → RAG + tool → merged prompt → LLM
+compatible with FastAPI's StreamingResponse. Integrated with session_store
+for multi-turn memory retention and AgentMail email tool dispatch.
 """
 
+import re
 from langchain_core.output_parsers import StrOutputParser
-from langchain_core.runnables import RunnableLambda, RunnablePassthrough
 from langchain_core.prompts import ChatPromptTemplate
 
 from app.utils.lc_llm import get_llm
@@ -23,6 +18,7 @@ from app.prompts.general_prompt import GENERAL_PROMPT
 from app.prompts.system_prompt import SYSTEM_PROMPT
 from app.rag.retriever import Retriever
 from app.router.tool_registry import get_tool
+from app.utils.session_memory import session_store
 
 _retriever = Retriever(top_k=5)
 
@@ -40,39 +36,64 @@ def _get_rag_context(question: str) -> str:
 
 
 def _run_tool(tool_name: str, query: str) -> str:
-    """Executes a registered tool and returns its string result."""
-    print(f"  [Handler-Tool] Executing tool: '{tool_name}'")
+    """Executes a registered tool and returns its string result with terminal logging."""
+    print(f"\n  [Handler-Tool] Executing tool: '{tool_name}' for query: '{query}'")
     try:
         fn = get_tool(tool_name)
-        result = fn(query)
-        print(f"  [Handler-Tool] Tool returned {len(str(result))} chars.")
-        return str(result)
+        
+        # Special handling for send_email tool
+        if tool_name == "send_email":
+            # Extract email address
+            email_match = re.search(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}", query)
+            target_email = email_match.group(0) if email_match else (session_store.user_email or "user@example.com")
+            session_store.user_email = target_email
+
+            # Gather details from stored selection or conversation history
+            bus_details = session_store.get_selected_bus()
+            if not bus_details:
+                bus_details = session_store.get_history_text(max_messages=6)
+
+            print(f"  [Handler-Tool EMAIL] Target Email: {target_email}")
+            result = fn(to_email=target_email, bus_details=bus_details)
+            print(f"  [Handler-Tool EMAIL RESULT] {result}")
+            return str(result)
+        else:
+            result = fn(query)
+            print(f"  [Handler-Tool] Tool returned {len(str(result))} chars.")
+            return str(result)
+
     except KeyError:
-        print(f"  [Handler-Tool] Tool '{tool_name}' not found — returning empty.")
-        return ""
+        print(f"  [Handler-Tool ERROR] Tool '{tool_name}' not registered.")
+        return f"ERROR: Tool '{tool_name}' is not registered."
     except Exception as err:
-        print(f"  [Handler-Tool] Tool '{tool_name}' error: {err}")
-        return ""
+        print(f"  [Handler-Tool ERROR] Execution failed for '{tool_name}': {err}")
+        return f"ERROR: Failed to execute tool '{tool_name}': {str(err)}"
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Handler 1: General LLM (no context)
+# Handler 1: General LLM (no vector search)
 # ──────────────────────────────────────────────────────────────────────────────
 
 def handle_general_llm(query: str):
-    """
-    Handles greetings, small talk, and general questions.
-    Uses GENERAL_PROMPT — no vector retrieval.
-    """
+    """Handles greetings, small talk, and general queries with session memory."""
     print("  [Handler] Mode: general_llm")
+    session_store.add_user_message(query)
+    chat_history = session_store.get_history_text()
+
+    full_response = ""
     try:
         llm = get_llm()
         chain = GENERAL_PROMPT | llm | StrOutputParser()
-        for token in chain.stream({"question": query}):
+        for token in chain.stream({"question": query, "chat_history": chat_history}):
+            full_response += token
             yield token
     except Exception as err:
         print(f"  [Handler Error - GeneralLLM] {err}")
-        yield "Hello! I am Trase, your AI travel assistant. How can I help you with bus routes, schedules, or fares today?"
+        fallback = "Hello! I am Trase, your AI travel assistant. How can I help you with bus routes, schedules, or fares today?"
+        full_response = fallback
+        yield fallback
+    finally:
+        session_store.add_assistant_message(full_response)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -80,35 +101,41 @@ def handle_general_llm(query: str):
 # ──────────────────────────────────────────────────────────────────────────────
 
 def handle_rag(query: str):
-    """
-    Full RAG pipeline: retrieve → RAG prompt → LLM.
-    Identical to the existing /chatbot/stream behaviour.
-    """
+    """Full RAG pipeline with session memory."""
     print("  [Handler] Mode: rag")
+    session_store.add_user_message(query)
+    chat_history = session_store.get_history_text()
+
+    full_response = ""
     try:
+        context = _get_rag_context(query)
+        # Store context if user selected an option or asked for bus details
+        if "option" in query.lower() or any(w in query.lower() for w in ["choose", "select", "want", "book"]):
+            session_store.set_selected_bus(context[:1500])
+
         llm = get_llm()
-        chain = (
-            {
-                "context": RunnableLambda(_get_rag_context),
-                "question": RunnablePassthrough(),
-            }
-            | RAG_PROMPT
-            | llm
-            | StrOutputParser()
-        )
-        for token in chain.stream(query):
+        chain = RAG_PROMPT | llm | StrOutputParser()
+        for token in chain.stream({
+            "context": context,
+            "question": query,
+            "chat_history": chat_history
+        }):
+            full_response += token
             yield token
     except Exception as err:
         print(f"  [Handler Error - RAG] {err}")
-        # Try direct database search fallback if the LangChain pipeline hit an issue
         try:
             raw_context = _get_rag_context(query)
             if raw_context:
-                yield "Here are the details from our database:\n\n" + raw_context
+                fallback = "Here are the details from our database:\n\n" + raw_context
             else:
-                yield "I'm sorry, but those details are not available in our travel database at the moment. Please let me know if there's anything else I can help you find!"
+                fallback = "I'm sorry, but those details are not available in our travel database at the moment."
         except Exception:
-            yield "I'm experiencing high server demand at the moment. Please try asking your question again in a few seconds."
+            fallback = "I'm experiencing high server demand right now. Please try again in a few moments."
+        full_response = fallback
+        yield fallback
+    finally:
+        session_store.add_assistant_message(full_response)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -116,19 +143,18 @@ def handle_rag(query: str):
 # ──────────────────────────────────────────────────────────────────────────────
 
 _TOOL_ONLY_TEMPLATE = """\
-You are Trase, a bus travel assistant.
-A tool was called to answer the user's request and returned the following result:
+Recent Chat History:
+{chat_history}
 
-Tool Result:
+Tool Execution Result:
 {tool_result}
 
-User Question:
+User Request:
 {question}
 
 Instructions:
-- Summarise the tool result in a clear, friendly way for the user.
-- If the tool result is empty or unhelpful, say you were unable to retrieve \
-  that information right now.
+- Summarise the tool result in a clear, friendly, and concise way.
+- Confirm clearly if an email was sent successfully.
 
 Answer:"""
 
@@ -139,20 +165,30 @@ _TOOL_ONLY_PROMPT = ChatPromptTemplate.from_messages([
 
 
 def handle_tool(query: str, tool_name: str):
-    """
-    Executes the named tool, then uses the LLM to format the result
-    into a friendly response for the user.
-    """
+    """Executes the named tool and formats result via LLM."""
     print(f"  [Handler] Mode: tool ('{tool_name}')")
+    session_store.add_user_message(query)
+    chat_history = session_store.get_history_text()
+
+    full_response = ""
     try:
         tool_result = _run_tool(tool_name, query)
         llm = get_llm()
         chain = _TOOL_ONLY_PROMPT | llm | StrOutputParser()
-        for token in chain.stream({"question": query, "tool_result": tool_result}):
+        for token in chain.stream({
+            "question": query,
+            "tool_result": tool_result,
+            "chat_history": chat_history
+        }):
+            full_response += token
             yield token
     except Exception as err:
         print(f"  [Handler Error - Tool] {err}")
-        yield "I encountered an issue executing that tool. Please try asking directly about specific bus routes or schedules."
+        fallback = "I encountered an issue executing that tool. Please try asking directly about specific bus routes or schedules."
+        full_response = fallback
+        yield fallback
+    finally:
+        session_store.add_assistant_message(full_response)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -160,10 +196,13 @@ def handle_tool(query: str, tool_name: str):
 # ──────────────────────────────────────────────────────────────────────────────
 
 _RAG_AND_TOOL_TEMPLATE = """\
+Recent Chat History:
+{chat_history}
+
 Context from Travel Database:
 {context}
 
-Tool Result:
+Tool Execution Result:
 {tool_result}
 
 User Question:
@@ -171,10 +210,7 @@ User Question:
 
 Instructions:
 - Answer using BOTH the database context AND the tool result.
-- Prefer the tool result for computed/exact values (e.g. fares).
-- Prefer the database context for descriptive information (e.g. facilities).
-- Never mention internal IDs, route codes, or database _ids.
-- If details are unavailable, politely say so.
+- Keep the response clean, friendly, and structured.
 
 Answer:"""
 
@@ -185,11 +221,12 @@ _RAG_AND_TOOL_PROMPT = ChatPromptTemplate.from_messages([
 
 
 def handle_rag_and_tool(query: str, tool_name: str):
-    """
-    Retrieves vector context AND runs a tool, then merges both into the
-    LLM prompt for the richest possible answer.
-    """
+    """Retrieves context AND runs tool, merging both into response."""
     print(f"  [Handler] Mode: rag_and_tool ('{tool_name}')")
+    session_store.add_user_message(query)
+    chat_history = session_store.get_history_text()
+
+    full_response = ""
     try:
         context = _get_rag_context(query)
         tool_result = _run_tool(tool_name, query)
@@ -199,10 +236,13 @@ def handle_rag_and_tool(query: str, tool_name: str):
             "question": query,
             "context": context,
             "tool_result": tool_result,
+            "chat_history": chat_history,
         }):
+            full_response += token
             yield token
     except Exception as err:
         print(f"  [Handler Error - RAG+Tool] {err}")
         yield from handle_rag(query)
-
-
+    finally:
+        if full_response:
+            session_store.add_assistant_message(full_response)
