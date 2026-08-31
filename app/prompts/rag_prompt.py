@@ -1,7 +1,8 @@
 """
 rag_prompt.py
 ──────────────
-Defines the RAG ChatPromptTemplate with Chat History support.
+Defines the RAG ChatPromptTemplate with Chat History, point-based formatting,
+route progression display, and stop-based fare calculation.
 
 Runtime variables:
   - {chat_history} : multi-turn conversation history
@@ -23,10 +24,11 @@ User Question:
 {question}
 
 Instructions:
-- Answer concisely using the provided context and conversation history.
-- When listing bus choices, present them clearly as numbered options (Option 1, Option 2...) with departure, arrival, bus type, fares, and facilities.
-- When a user chooses a bus, show its details and ask: "Would you like me to send these bus details to your email?"
-- If details are not available in context, politely reply:
+- Use the retrieved database context to answer accurately.
+- When listing bus choices, present them clearly as numbered point-based options (Option 1, Option 2, etc.) including Bus Name, Bus Type, Schedule, Seats, Facilities, Full Route Progression, and Base MinFare / Additional Fare.
+- For fare calculations, use the formula: Total Fare = MinFare + (Number of Intermediate Stops × Additional Fare per Stop) and show the calculation breakdown clearly.
+- When the user selects or finalizes a bus, provide the finalized journey summary and ask if they'd like it emailed.
+- If details are not available in context, politely state:
   "I'm sorry, but those details are not available in our travel database right now."
 
 Answer:"""

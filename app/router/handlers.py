@@ -101,7 +101,7 @@ def handle_general_llm(query: str):
 # ──────────────────────────────────────────────────────────────────────────────
 
 def handle_rag(query: str):
-    """Full RAG pipeline with session memory."""
+    """Full RAG pipeline with session memory and single-bus selection isolation."""
     print("  [Handler] Mode: rag")
     session_store.add_user_message(query)
     chat_history = session_store.get_history_text()
@@ -109,9 +109,6 @@ def handle_rag(query: str):
     full_response = ""
     try:
         context = _get_rag_context(query)
-        # Store context if user selected an option or asked for bus details
-        if "option" in query.lower() or any(w in query.lower() for w in ["choose", "select", "want", "book"]):
-            session_store.set_selected_bus(context[:1500])
 
         llm = get_llm()
         chain = RAG_PROMPT | llm | StrOutputParser()
@@ -122,6 +119,17 @@ def handle_rag(query: str):
         }):
             full_response += token
             yield token
+
+        # If user selected an option or finalized a bus, save the specific generated details
+        lower_q = query.lower()
+        if any(kw in lower_q for kw in ["option", "choose", "select", "want", "book", "finalize", "calculated", "fare"]):
+            # Store the specific response summary for clean email tool dispatch
+            session_store.set_selected_bus(full_response.strip())
+        elif not session_store.get_selected_bus() and context:
+            # Fallback to the top retrieved chunk if nothing explicitly selected yet
+            top_chunk = context.split("\n\n")[0] if "\n\n" in context else context
+            session_store.set_selected_bus(top_chunk.strip())
+
     except Exception as err:
         print(f"  [Handler Error - RAG] {err}")
         try:

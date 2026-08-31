@@ -22,6 +22,7 @@ from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from app.utils.input_cleaner import clean_user_prompt
 from app.router.intent_classifier import classify_intent
 from app.router.handlers import (
     handle_general_llm,
@@ -47,39 +48,43 @@ class QueryRequest(BaseModel):
 
 def _dispatch(message: str):
     """
-    Classifies the query intent and yields streaming tokens from the
-    appropriate handler. This is the core routing function.
+    Sanitizes the prompt, classifies the query intent, and yields streaming
+    tokens from the appropriate handler.
     """
-    print("=" * 55)
-    print(f"[QueryRouter] Received: {message!r}")
+    clean_message = clean_user_prompt(message)
+    if not clean_message:
+        clean_message = message.strip() or "Hello"
 
-    classification = classify_intent(message)
+    print("=" * 55)
+    print(f"[QueryRouter] Raw: {message!r} -> Cleaned: {clean_message!r}")
+
+    classification = classify_intent(clean_message)
     intent = classification.get("intent", "rag")
     tool_name = classification.get("tool_name")
 
     print(f"[QueryRouter] Dispatching -> intent='{intent}', tool='{tool_name}'")
 
     if intent == "general_llm":
-        yield from handle_general_llm(message)
+        yield from handle_general_llm(clean_message)
 
     elif intent == "tool":
         if tool_name:
-            yield from handle_tool(message, tool_name)
+            yield from handle_tool(clean_message, tool_name)
         else:
             # tool intent but no tool name — safe fallback to RAG
             print("  [QueryRouter] tool_name is None, falling back to rag.")
-            yield from handle_rag(message)
+            yield from handle_rag(clean_message)
 
     elif intent == "rag_and_tool":
         if tool_name:
-            yield from handle_rag_and_tool(message, tool_name)
+            yield from handle_rag_and_tool(clean_message, tool_name)
         else:
             print("  [QueryRouter] tool_name is None for rag_and_tool, falling back to rag.")
-            yield from handle_rag(message)
+            yield from handle_rag(clean_message)
 
     else:
         # Default: "rag" (also covers unknown intents)
-        yield from handle_rag(message)
+        yield from handle_rag(clean_message)
 
     print("[QueryRouter] Response complete.")
     print("=" * 55)
