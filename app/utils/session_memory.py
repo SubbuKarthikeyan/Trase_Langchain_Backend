@@ -21,6 +21,14 @@ class SessionMemory:
         self.pending_email_consent: bool = False
         self.user_email: Optional[str] = None
 
+        # ── Email confirmation flow state machine ──────────────────────────
+        # Stage values: None | "awaiting_email" | "awaiting_confirmation"
+        self.email_flow_stage: Optional[str] = None
+        # Email address collected from the user but not yet confirmed/sent
+        self.pending_email_address: Optional[str] = None
+        # Email body content shown as preview, awaiting user go-ahead
+        self.pending_email_content: Optional[str] = None
+
     def add_user_message(self, content: str) -> None:
         """Appends a user message to history."""
         self.messages.append({"role": "user", "content": content})
@@ -59,6 +67,10 @@ class SessionMemory:
         self.last_selected_bus = None
         self.pending_email_consent = False
         self.user_email = None
+        # Reset email flow state machine
+        self.email_flow_stage = None
+        self.pending_email_address = None
+        self.pending_email_content = None
 
 
 # Global singleton in-memory session store (can be indexed by session_id in future)

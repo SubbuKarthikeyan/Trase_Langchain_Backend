@@ -104,19 +104,36 @@ def classify_intent(query: str) -> dict:
     """
     Classifies the user query and returns a dict:
         {
-            "intent":    "general_llm" | "rag" | "tool" | "rag_and_tool",
+            "intent":    "general_llm" | "rag" | "tool" | "rag_and_tool" | "email_flow",
             "tool_name": None | "tool_name_string"
         }
 
     Guarantees never to raise — always returns a valid classification.
     """
+    from app.utils.session_memory import session_store  # local import to avoid circular
+
     print(f"\n[Router] Classifying intent for: '{query}'")
 
-    # Fast heuristic check for email dispatch requests
-    email_match = re.search(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}", query)
-    if email_match or any(kw in query.lower() for kw in ["send email", "send to mail", "send mail", "email me", "mail me"]):
-        print("  [Router Heuristic] Detected email request / address in query -> routing to 'tool' (send_email)")
-        return {"intent": "tool", "tool_name": "send_email"}
+    # ── Priority 1: Mid-flow intercept ─────────────────────────────────────
+    # If the user is already inside the email confirmation flow, their reply
+    # (e.g. an email address, "yes", "no") must NOT go through LLM classification.
+    # Route it straight back to the email_flow handler.
+    if session_store.email_flow_stage is not None:
+        print(
+            f"  [Router Heuristic] Active email_flow stage='{session_store.email_flow_stage}' "
+            f"-> routing to 'email_flow'"
+        )
+        return {"intent": "email_flow", "tool_name": None}
+
+    # ── Priority 2: New email trigger heuristic ────────────────────────────
+    # Detect fresh email-send requests and start the confirmation flow.
+    email_trigger_keywords = [
+        "send email", "send to mail", "send mail", "email me", "mail me",
+        "send it to my email", "send to email", "email the details", "mail the details",
+    ]
+    if any(kw in query.lower() for kw in email_trigger_keywords):
+        print("  [Router Heuristic] Detected email trigger keyword -> routing to 'email_flow'")
+        return {"intent": "email_flow", "tool_name": None}
 
     try:
         llm = get_llm()

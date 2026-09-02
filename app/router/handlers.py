@@ -19,6 +19,7 @@ from app.prompts.system_prompt import SYSTEM_PROMPT
 from app.rag.retriever import Retriever
 from app.router.tool_registry import get_tool
 from app.utils.session_memory import session_store
+from app.tools.email_tool import send_bus_details_email
 
 _retriever = Retriever(top_k=5)
 
@@ -254,3 +255,176 @@ def handle_rag_and_tool(query: str, tool_name: str):
     finally:
         if full_response:
             session_store.add_assistant_message(full_response)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Handler 5: Multi-turn email confirmation flow
+# ──────────────────────────────────────────────────────────────────────────────
+
+_EMAIL_CONFIRM_KEYWORDS = {"yes", "yeah", "yep", "sure", "ok", "okay", "confirm", "send", "go ahead", "do it"}
+_EMAIL_CANCEL_KEYWORDS  = {"no", "nope", "cancel", "stop", "don't", "dont", "abort"}
+
+
+def _extract_email(text: str) -> str | None:
+    """Returns the first valid email address found in text, or None."""
+    match = re.search(r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}", text)
+    return match.group(0) if match else None
+
+
+def _build_email_preview() -> str:
+    """
+    Returns the content that will be included in the email body.
+    Priority: last selected bus → last 6 chat messages.
+    """
+    selected = session_store.get_selected_bus()
+    if selected:
+        return selected
+    # Fallback: recent conversation context
+    return session_store.get_history_text(max_messages=6)
+
+
+def handle_email_flow(query: str):
+    """
+    Multi-turn handler that walks the user through a 3-stage email
+    confirmation conversation before actually sending any email.
+
+    Stage transitions (stored in session_store.email_flow_stage):
+        None                  → ask for email address (or skip to preview
+                                if address already provided)
+        "awaiting_email"      → validate address, show preview, ask confirm
+        "awaiting_confirmation" → send or abort based on user reply
+    """
+    print(f"  [Handler] Mode: email_flow | stage={session_store.email_flow_stage!r}")
+    session_store.add_user_message(query)
+
+    stage = session_store.email_flow_stage
+
+    # ── Stage 0: Initial trigger ───────────────────────────────────────────
+    if stage is None:
+        # Check if the user already embedded an email address in their message
+        found_email = _extract_email(query)
+        if found_email:
+            # Great — we have the address. Build preview and ask for confirmation.
+            session_store.pending_email_address = found_email
+            session_store.pending_email_content = _build_email_preview()
+            session_store.email_flow_stage = "awaiting_confirmation"
+
+            preview = session_store.pending_email_content
+            response = (
+                f"Got it! Here's a preview of what I'll send to **{found_email}**:\n\n"
+                f"---\n{preview}\n---\n\n"
+                f"Should I go ahead and send this? Reply **yes** to confirm or **no** to cancel."
+            )
+        else:
+            # No email found — ask the user for it.
+            session_store.email_flow_stage = "awaiting_email"
+            response = (
+                "Sure! I'd be happy to email you the bus details. "
+                "What email address should I send this to?"
+            )
+
+        session_store.add_assistant_message(response)
+        yield response
+        return
+
+    # ── Stage 1: Awaiting email address ───────────────────────────────────
+    if stage == "awaiting_email":
+        found_email = _extract_email(query)
+        if not found_email:
+            # Still no valid email — politely re-ask
+            response = (
+                "Hmm, I couldn't find a valid email address in that. "
+                "Could you please provide a valid email? (e.g. yourname@example.com)"
+            )
+            session_store.add_assistant_message(response)
+            yield response
+            return
+
+        # Valid email received — build preview and ask for confirmation
+        session_store.pending_email_address = found_email
+        session_store.pending_email_content = _build_email_preview()
+        session_store.email_flow_stage = "awaiting_confirmation"
+
+        preview = session_store.pending_email_content
+        response = (
+            f"Perfect! Here's a preview of what I'll send to **{found_email}**:\n\n"
+            f"---\n{preview}\n---\n\n"
+            f"Should I go ahead and send this? Reply **yes** to confirm or **no** to cancel."
+        )
+        session_store.add_assistant_message(response)
+        yield response
+        return
+
+    # ── Stage 2: Awaiting confirmation ────────────────────────────────────
+    if stage == "awaiting_confirmation":
+        q_lower = query.lower().strip()
+
+        confirmed = any(kw in q_lower for kw in _EMAIL_CONFIRM_KEYWORDS)
+        cancelled = any(kw in q_lower for kw in _EMAIL_CANCEL_KEYWORDS)
+
+        if confirmed and not cancelled:
+            to_email = session_store.pending_email_address
+            content  = session_store.pending_email_content
+
+            print(f"  [EmailFlow] Confirmed — sending to {to_email}")
+
+            # Reset flow state BEFORE sending so a failure doesn't loop
+            session_store.email_flow_stage    = None
+            session_store.pending_email_address = None
+            session_store.pending_email_content = None
+
+            try:
+                result = send_bus_details_email(to_email=to_email, bus_details=content)
+                if result.startswith("SUCCESS"):
+                    response = (
+                        f"✅ Email sent successfully to **{to_email}**! "
+                        f"You should receive it shortly. Is there anything else I can help you with?"
+                    )
+                else:
+                    response = (
+                        f"❌ There was a problem sending the email: {result}\n"
+                        f"Please try again or contact support."
+                    )
+            except Exception as err:
+                print(f"  [EmailFlow ERROR] {err}")
+                response = (
+                    f"❌ Unexpected error while sending email: {str(err)}. "
+                    f"Please try again."
+                )
+
+            session_store.add_assistant_message(response)
+            yield response
+            return
+
+        elif cancelled:
+            # User said no — abort cleanly
+            session_store.email_flow_stage    = None
+            session_store.pending_email_address = None
+            session_store.pending_email_content = None
+
+            response = (
+                "No problem! The email has been cancelled. "
+                "Let me know if you'd like anything else."
+            )
+            session_store.add_assistant_message(response)
+            yield response
+            return
+
+        else:
+            # Ambiguous reply — ask again
+            response = (
+                "I didn't quite catch that. Please reply with **yes** to send the email "
+                "or **no** to cancel."
+            )
+            session_store.add_assistant_message(response)
+            yield response
+            return
+
+    # ── Safety net: unknown stage — reset and restart ─────────────────────
+    print(f"  [EmailFlow] Unknown stage '{stage}' — resetting.")
+    session_store.email_flow_stage    = None
+    session_store.pending_email_address = None
+    session_store.pending_email_content = None
+    response = "Something went wrong with the email flow. Let's start over — would you like me to email you the bus details?"
+    session_store.add_assistant_message(response)
+    yield response
