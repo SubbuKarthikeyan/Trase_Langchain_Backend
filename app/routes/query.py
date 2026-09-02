@@ -29,6 +29,7 @@ from app.router.handlers import (
     handle_rag,
     handle_tool,
     handle_rag_and_tool,
+    handle_email_flow,
 )
 
 router = APIRouter(prefix="/query", tags=["Query Router"])
@@ -66,6 +67,10 @@ def _dispatch(message: str):
 
     if intent == "general_llm":
         yield from handle_general_llm(clean_message)
+
+    elif intent == "email_flow":
+        # Multi-turn email confirmation flow — handles its own stage transitions
+        yield from handle_email_flow(clean_message)
 
     elif intent == "tool":
         if tool_name:
